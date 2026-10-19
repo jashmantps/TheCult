@@ -1,0 +1,37 @@
+# Configuration for The Cult.
+# Lines are var=value with no surrounding whitespace. '#' starts a comment.
+
+# Path to the UNIX domain socket the server listens on and clients connect to.
+sockPath=/home/cultmaster/cult.sock
+
+# Directory holding the public and master game logs.
+logDir=/home/cultmaster/log
+
+# How many players the server waits for before starting (it will also start
+# early once joinTime expires with at least minPlayers connected).
+minPlayers=5
+
+# Seconds to wait in the lobby for players to join before starting.
+joinTime=60
+
+# Phase durations, in seconds.
+nightTime=30
+dayTalkTime=45
+dayVoteTime=30
+
+# Maximum number of day/night rounds before the town wins by survival.
+maxRounds=6
+
+# Number of special town roles. The rest are plain Townsfolk.
+# There is always exactly 1 Cult Leader.
+numInvestigators=1
+numSkeptics=1
+
+# Conversion rule: a converted player count (including the Leader) reaching
+# this fraction of the LIVING players wins the game for the cult.
+# 0.5 means "half or more".
+cultWinFraction=0.5
+
+# 1 = assign roles randomly; 0 = read a fixed assignment from roles.txt
+# (one "name role" per line) -- handy for reproducible demos/screenshots.
+randomRoles=1

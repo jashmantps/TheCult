@@ -1,0 +1,165 @@
+===========================================================================
+ THE CULT  --  a hidden-role social-deduction game over UNIX stream sockets
+ Author: Abhishek Singh
+ Course: CSE/CEN Advanced Operating Systems, Arizona State University, Fall 2026
+===========================================================================
+
+WHAT THIS IS
+------------
+The Cult is a text-based, Werewolves-style game for a Linux machine. Each
+player is a separate Linux user running a client process; a single server
+process (the "Prophet") runs the game. Unlike Werewolves, nobody is ever
+killed or removed -- a hidden Cult Leader CONVERTS players one at a time,
+and converted players secretly join a growing "cult channel" while keeping
+up appearances in public. The town tries to expose cultists by vote.
+
+Because no player is ever eliminated, there is no "dead player still
+connected" problem: a socket that stays open for the whole game is the
+normal, expected case, which keeps the connection lifecycle simple.
+
+All communication goes through a single-file communications library:
+
+        cultnet.py        <-- THE COMMUNICATIONS LIBRARY (one file)
+
+Nothing else in the project opens a socket or frames a message.
+
+
+COMMUNICATIONS LIBRARY: cultnet.py
+----------------------------------
+Primitive: UNIX domain STREAM sockets (AF_UNIX, SOCK_STREAM), multiplexed
+in one server process with a `selectors` (epoll) event loop. Messages are
+length-prefixed JSON frames: a 4-byte big-endian length followed by that
+many bytes of UTF-8 JSON. Peer identity is taken from the kernel via the
+SO_PEERCRED socket option, so a client cannot forge who it is.
+
+API -- SERVER SIDE (class CultServer):
+    CultServer(sock_path)        Create, bind, and listen on a UNIX socket.
+    .poll(timeout) -> [events]   Pump the event loop once. Returns a list of:
+                                   ('connect',    cid, uid)
+                                   ('message',    cid, obj)
+                                   ('disconnect', cid)
+    .send(cid, obj)              UNICAST one JSON object to one connection.
+    .multicast(cids, obj)        MULTICAST the same object to a subset.
+    .broadcast(obj)              BROADCAST the same object to everyone.
+    .peers() -> [cid]            All currently connected connection ids.
+    .uid_of(cid) -> uid          Kernel-verified Linux UID for a connection.
+    .close()                     Shut everything down and remove the socket.
+
+API -- CLIENT SIDE (class CultClient):
+    CultClient(sock_path)        Connect to the server's UNIX socket.
+    .send(obj)                   Send one JSON object (framed) to the server.
+    .recv(timeout=None) -> obj   Receive one JSON object (None on close /
+                                 timeout).
+    .close()                     Disconnect.
+
+"obj" is any JSON-serialisable dict. The library handles framing and
+delivery only; the game layer decides what the keys mean.
+
+Addressing vs. identity: each connection gets a unique integer id (cid)
+used for delivery, and carries the kernel-verified UID (available via
+uid_of). Keeping the two separate means several clients that share a UID
+(e.g. a grader running five terminals as one user) are still distinct,
+addressable players, while the game can still trust uid_of() for "who is
+this really".
+
+
+FILES
+-----
+  cultnet.py       THE communications library (single file). Both server
+                   and client import it. Contains all socket/framing code.
+  cultserver.py    The game server / moderator ("the Prophet"). Phases,
+                   roles, conversions, votes, win conditions, logging.
+  cultclient.py    The player client. Two threads: receive+print, and
+                   read-input+send. Thin -- it knows no rules.
+  cultbot.py       An automated bot player (optional). Connects exactly
+                   like a human; useful for testing and for simulating a
+                   full game for screenshots.
+  cultconfig       Configuration (socket path, log dir, phase durations,
+                   number of special roles, win fraction, etc.).
+  roles.txt        Optional fixed role assignment (used when randomRoles=0
+                   in cultconfig) for reproducible demos. Format: one
+                   "name role" per line.
+  makeplayers.py   Creates player0..playerN-1 Linux users (calls mkplayer.sh).
+  mkplayer.sh      Creates one playerN user and installs the client files.
+  install.sh       Full install: cultmaster user, player users, perms.
+  uninstall.sh     Removes all the users this created.
+  README           This file.
+
+
+SETUP (on an Ubuntu Linux VM, with sudo)
+-----------------------------------------
+From inside the unpacked source directory:
+
+    sudo ./install.sh 6          # create cultmaster + player0..player5
+
+This creates:
+  * a 'cultmaster' user owning the server, the socket, and the logs,
+  * players player0 .. player5, each with cultclient.py and cultnet.py in
+    their home directory,
+  * /home/cultmaster/log, readable only by cultmaster (the MASTER log holds
+    hidden roles and conversions; the PUBLIC log is the town transcript).
+
+Edit /home/cultmaster/cultconfig if you want different timers or player
+counts. minPlayers must be <= the number of players you created.
+
+
+PLAYING
+-------
+1. Start the server as cultmaster (in one terminal):
+
+       sudo -u cultmaster bash -c 'cd /home/cultmaster && python3 cultserver.py'
+
+   It prints that it is listening and waits in the lobby for players.
+
+2. For each player, open a terminal and become that user, then run the
+   client (it finds the server at the socket path in cultconfig's default):
+
+       sudo -u player0 python3 /home/player0/cultclient.py
+       sudo -u player1 python3 /home/player1/cultclient.py
+       ... and so on.
+
+   (Give each client an explicit name if you like:
+       python3 /home/player0/cultclient.py /home/cultmaster/cult.sock Alice )
+
+3. Once minPlayers have joined (or joinTime expires), the game starts.
+
+HOW TO PLAY (what to type in the client)
+----------------------------------------
+  * Just type text to CHAT. During the day it goes to everyone (broadcast);
+    at night, if you are in the cult, it goes to the cult only (multicast).
+  * If you are the Cult Leader, at night type:   pitch <name>
+  * If you are an Investigator, at night type:   check <name>
+  * During the day vote, type:                   vote <name>
+
+The server tells you your role privately at the start and prompts you when
+it is your turn to act.
+
+
+QUICK LOCAL TEST (no user creation, single account)
+---------------------------------------------------
+You can exercise everything as one user with a local socket path. Make a
+config pointing sockPath/logDir somewhere writable with short timers, start
+the server, then start several clients (or bots) in other terminals against
+that same socket path. Example with bots:
+
+    python3 cultserver.py myconfig &
+    python3 cultbot.py /tmp/cult.sock alice 1 &
+    python3 cultbot.py /tmp/cult.sock bob   2 &
+    ... (5+ bots) ...
+
+
+UNINSTALL
+---------
+    sudo ./uninstall.sh 6
+
+
+WHY THIS PRIMITIVE (vs. the named pipes in Werewolves)
+------------------------------------------------------
+  * One process selects over ALL clients at once, so the server never does
+    a blocking read on one specific player's channel. There is no per-player
+    "which pipe is the server waiting on" wait-state for an attacker to
+    observe (the Werewolves pipe side channel).
+  * SO_PEERCRED gives kernel-verified sender identity, so players cannot
+    impersonate each other (the Werewolves imposter problem).
+  * Messages are framed JSON written to the socket, never interpolated into
+    a shell command, so the Werewolves command-injection class cannot occur.
